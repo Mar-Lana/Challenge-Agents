@@ -61,6 +61,17 @@ describe('Creación de reservas', () => {
     expect(servicio.listarReservas()).toHaveLength(1);
     expect(servicio.listarReservas()[0].id).toBe(reserva.id);
   });
+
+  test('acepta el inventario real que usa la clave id', async () => {
+    const servicio = crearServicioReservas({
+      inventario: [{ id: 'MIC-01', name: 'Microscopio digital' }],
+      reservas: [],
+    });
+
+    const reserva = await servicio.crearReserva(reservaValida());
+
+    expect(reserva.unidad).toBe('MIC-01');
+  });
 });
 
 describe('Reglas de solapamiento', () => {
@@ -175,6 +186,57 @@ describe('Validación de entradas', () => {
         }),
       ),
     ).rejects.toThrow(/inicio debe ser anterior/i);
+
+    expect(servicio.listarReservas()).toHaveLength(0);
+  });
+});
+
+describe('Integración con persistencia', () => {
+  test('carga las reservas existentes y guarda después de crear una válida', async () => {
+    const reservasExistentes = [
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        unidad: 'MIC-01',
+        solicitante: 'Ana Pérez',
+        inicio: '2026-10-27T09:00:00.000Z',
+        fin: '2026-10-27T10:00:00.000Z',
+        estado: 'ACTIVA',
+      },
+    ];
+    const cargarReservas = jest.fn(() => [...reservasExistentes]);
+    const guardarReservas = jest.fn();
+
+    const servicio = crearServicioReservas({
+      inventario: INVENTARIO,
+      persistencia: { cargarReservas, guardarReservas },
+    });
+
+    expect(cargarReservas).toHaveBeenCalledTimes(1);
+    expect(servicio.listarReservas()).toEqual(reservasExistentes);
+
+    await servicio.crearReserva(reservaValida());
+
+    expect(guardarReservas).toHaveBeenCalledTimes(1);
+    expect(guardarReservas.mock.calls[0][0]).toHaveLength(2);
+  });
+
+  test('revierte el cambio en memoria si falla el guardado', async () => {
+    const reservasExistentes = [];
+    const guardarReservas = jest.fn(() => {
+      throw new Error('fallo de disco');
+    });
+
+    const servicio = crearServicioReservas({
+      inventario: INVENTARIO,
+      persistencia: {
+        cargarReservas: () => reservasExistentes,
+        guardarReservas,
+      },
+    });
+
+    await expect(servicio.crearReserva(reservaValida())).rejects.toThrow(
+      'fallo de disco',
+    );
 
     expect(servicio.listarReservas()).toHaveLength(0);
   });

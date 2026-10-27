@@ -1,4 +1,8 @@
 const { randomUUID } = require('node:crypto');
+const {
+  cargarReservas: cargarReservasPorDefecto,
+  guardarReservas: guardarReservasPorDefecto,
+} = require('../persistence');
 
 const ISO_8601 =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|[+-]\d{2}:\d{2})$/;
@@ -47,16 +51,39 @@ function parseFecha(valor) {
 }
 
 /**
- * Crea el servicio de reservas con almacenamiento en memoria.
+ * Crea el servicio de reservas.
+ *
+ * Si se recibe `reservas`, el servicio trabaja sobre ese arreglo en memoria
+ * (útil para pruebas unitarias). Si se omite, carga y guarda las reservas
+ * usando las funciones síncronas de `persistence.js`.
  *
  * @param {Object} opciones
  * @param {Array<{codigo: string}>} opciones.inventario Unidades disponibles.
- * @param {Array} [opciones.reservas] Reservas iniciales.
+ * @param {Array} [opciones.reservas] Reservas iniciales en memoria.
+ * @param {{cargarReservas?: Function, guardarReservas?: Function}} [opciones.persistencia]
+ *   Implementación de persistencia inyectable para pruebas.
  * @returns {{ crearReserva: Function, listarReservas: Function }}
  */
-function crearServicioReservas({ inventario = [], reservas = [] } = {}) {
-  const unidades = new Set(inventario.map((unidad) => unidad.codigo));
-  const almacen = Array.isArray(reservas) ? reservas : [];
+function crearServicioReservas({
+  inventario = [],
+  reservas,
+  persistencia = {},
+} = {}) {
+  const unidades = new Set(
+    inventario
+      .map((unidad) => unidad.codigo || unidad.id)
+      .filter((codigo) => typeof codigo === 'string' && codigo !== ''),
+  );
+  const usarPersistencia = !Array.isArray(reservas);
+  const cargarReservas =
+    persistencia.cargarReservas || cargarReservasPorDefecto;
+  const guardarReservas =
+    persistencia.guardarReservas || guardarReservasPorDefecto;
+  const almacen = usarPersistencia ? cargarReservas() : reservas;
+
+  if (!Array.isArray(almacen)) {
+    throw new Error('El almacén de reservas debe ser un arreglo');
+  }
 
   function crearReserva(datos = {}) {
     return Promise.resolve().then(() => {
@@ -110,6 +137,17 @@ function crearServicioReservas({ inventario = [], reservas = [] } = {}) {
       };
 
       almacen.push(reserva);
+
+      if (usarPersistencia) {
+        try {
+          guardarReservas(almacen);
+        } catch (error) {
+          // Mantener consistencia entre memoria y disco si falla la escritura.
+          almacen.pop();
+          throw error;
+        }
+      }
+
       return { ...reserva };
     });
   }
