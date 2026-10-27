@@ -62,7 +62,7 @@ function parseFecha(valor) {
  * @param {Array} [opciones.reservas] Reservas iniciales en memoria.
  * @param {{cargarReservas?: Function, guardarReservas?: Function}} [opciones.persistencia]
  *   Implementación de persistencia inyectable para pruebas.
- * @returns {{ crearReserva: Function, listarReservas: Function }}
+ * @returns {{ crearReserva: Function, cancelarReserva: Function, listarReservas: Function }}
  */
 function crearServicioReservas({
   inventario = [],
@@ -152,11 +152,50 @@ function crearServicioReservas({
     });
   }
 
-  function listarReservas() {
-    return almacen.map((reserva) => ({ ...reserva }));
+  function cancelarReserva(id) {
+    return Promise.resolve().then(() => {
+      const indice = almacen.findIndex((reserva) => reserva.id === id);
+
+      if (indice === -1) {
+        throw new Error('Reserva no encontrada');
+      }
+
+      const anterior = almacen[indice];
+
+      // La cancelación es idempotente: conserva el historial sin duplicarlo.
+      if (anterior.estado === 'CANCELADA') {
+        return { ...anterior };
+      }
+
+      const cancelada = {
+        ...anterior,
+        estado: 'CANCELADA',
+        actualizado_en: new Date().toISOString(),
+      };
+
+      almacen[indice] = cancelada;
+
+      if (usarPersistencia) {
+        try {
+          guardarReservas(almacen);
+        } catch (error) {
+          // Restaurar la reserva activa si no se pudo persistir la cancelación.
+          almacen[indice] = anterior;
+          throw error;
+        }
+      }
+
+      return { ...cancelada };
+    });
   }
 
-  return { crearReserva, listarReservas };
+  function listarReservas({ estado } = {}) {
+    return almacen
+      .filter((reserva) => estado === undefined || reserva.estado === estado)
+      .map((reserva) => ({ ...reserva }));
+  }
+
+  return { crearReserva, cancelarReserva, listarReservas };
 }
 
 module.exports = { crearServicioReservas, parseFecha };

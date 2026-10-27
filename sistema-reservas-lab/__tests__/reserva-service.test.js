@@ -240,4 +240,34 @@ describe('Integración con persistencia', () => {
 
     expect(servicio.listarReservas()).toHaveLength(0);
   });
+
+  test('revierte la cancelación en memoria si falla el guardado', async () => {
+    const reservaActiva = {
+      id: '22222222-2222-4222-8222-222222222222',
+      unidad: 'MIC-01',
+      solicitante: 'Ana Pérez',
+      inicio: '2026-10-27T10:00:00.000Z',
+      fin: '2026-10-27T11:00:00.000Z',
+      estado: 'ACTIVA',
+    };
+    const guardarReservas = jest.fn(() => {
+      throw new Error('fallo de disco al cancelar');
+    });
+
+    const servicio = crearServicioReservas({
+      inventario: INVENTARIO,
+      persistencia: {
+        cargarReservas: () => [reservaActiva],
+        guardarReservas,
+      },
+    });
+
+    await expect(
+      servicio.cancelarReserva(reservaActiva.id),
+    ).rejects.toThrow('fallo de disco al cancelar');
+
+    expect(servicio.listarReservas()).toEqual([
+      expect.objectContaining({ id: reservaActiva.id, estado: 'ACTIVA' }),
+    ]);
+  });
 });
