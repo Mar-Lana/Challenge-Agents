@@ -1,51 +1,168 @@
-# Documentación del módulo `persistence.js`
+# Persistencia local JSON de reservas
 
-## Entorno de ejecución
-- **Sistema operativo:** Windows 10 (ruta del workspace: `C:/Users/LANA/orca/workspaces/Challenge-Agents/Maria-Lana`)
-- **Node.js version:** La versión disponible en el contenedor de CI de este proyecto (compatibilidad con ES5/CommonJS).
-- **Herramientas usadas por el agente:**
-  - `write` (para crear/sobrescribir archivos).
-  - `read` y `bash` no fueron necesarios en este paso.
-- **Modelo de agente:** `gpt-4o-mini` (según la variable de entorno `PI_MODEL`).
+## Propósito
 
-## Funcionalidad implementada
-Se creó el archivo **`sistema-reservas-lab/persistence.js`** que exporta dos funciones **síncronas**:
-- `cargarReservas()` – Lee `reservas.json` y devuelve un arreglo de reservas. Si el archivo no existe, devuelve `[]`.
-- `guardarReservas(reservas)` – Serializa el arreglo recibido a JSON (formato legible con indentación de 2 espacios) y lo escribe en `reservas.json`.
+El módulo `persistence.js` conserva en `reservas.json` el **historial completo**
+de reservas del sistema: tanto las `ACTIVA` como las `CANCELADA`. Al volver a
+iniciar la aplicación, el servicio carga ese archivo y reconstruye su estado sin
+perder reservas ni historial.
 
-```js
-const fs = require('fs');
-const path = require('path');
-const reservasFile = path.join(__dirname, 'reservas.json');
-
-function cargarReservas() { /* ... */ }
-function guardarReservas(reservas) { /* ... */ }
-
-module.exports = { cargarReservas, guardarReservas };
-```
-
-## Errores detectados y cómo se manejaron
-- **Archivo `reservas.json` inexistente:** `fs.readFileSync` lanzaría `ENOENT`. Se captura este error y se devuelve un arreglo vacío, permitiendo que la aplicación arranque sin datos previos.
-- **Errores de JSON inválido:** Si el contenido no se puede parsear, el error se propaga (`throw err`). Esto es intencional para que la capa de negocio pueda decidir cómo reaccionar (p. ej., resetear datos o notificar al usuario).
-- **Permisos de escritura/lectura:** Se asume que el proceso tiene permisos de lectura y escritura en el directorio del proyecto (situación típica en entornos de desarrollo y CI).
-
-## Decisiones técnicas y supuestos razonables
-| Decisión | Motivo / Justificación |
-|----------|------------------------|
-| **Uso de API síncrona (`readFileSync` / `writeFileSync`)** | Simplicidad y determinismo en scripts de prueba y en la lógica de negocio que no es altamente concurrente. Evita la necesidad de callbacks o promesas en el resto del código.
-| **Ruta relativa al módulo (`__dirname`)** | Garantiza que el archivo `reservas.json` siempre se ubique junto a `persistence.js`, independiente del directorio de ejecución actual.
-| **Formato JSON con indentación de 2 espacios** | Facilita la inspección manual del archivo durante desarrollo y debugging.
-| **Devolver `[]` cuando el archivo no existe** | Permite que la aplicación empiece con una lista vacía de reservas sin necesidad de crear el archivo previamente.
-| **No capturar errores de parseo** | Un JSON corrupto indica un problema grave (p. ej., edición manual incorrecta). Propagar la excepción obliga a quien consuma la función a manejar el caso de forma explícita.
-
-## Evidencia concreta de la creación del archivo
-- **Comando interno del agente:** `write` con la ruta `sistema-reservas-lab/persistence.js` y el contenido mostrado arriba.
-- **Respuesta del agente:** `Successfully wrote to sistema-reservas-lab/persistence.js` (confirmación de la operación).
-
-## Próximos pasos recomendados
-1. **Añadir pruebas unitarias** que verifiquen la carga y guardado de reservas, incluyendo los casos de archivo inexistente y JSON corrupto.
-2. **Integrar el módulo** en la capa de negocio existente (por ejemplo, en `services/reservaService.js`).
-3. **Configurar CI** para ejecutar `npm test` y asegurar que todas las pruebas pasen.
+La persistencia es deliberadamente simple y síncrona, adecuada para el prototipo
+local de un solo proceso descrito en `docs/sdd.md` (RF-6).
 
 ---
-*Este documento fue generado automáticamente por el agente de programación dentro del repositorio `sistema-reservas-lab`.*
+
+## Formato de almacenamiento
+
+`reservas.json` contiene un arreglo JSON con todas las reservas. No se eliminan
+los registros cancelados; únicamente cambia su campo `estado`.
+
+```json
+[
+  {
+    "id": "3f9c2b7e-6b5a-4a0e-9f60-2a7d9c1e4b11",
+    "unidad": "MIC-01",
+    "solicitante": "Ana Pérez",
+    "inicio": "2026-10-27T10:00:00.000Z",
+    "fin": "2026-10-27T11:00:00.000Z",
+    "estado": "CANCELADA",
+    "creado_en": "2026-10-27T01:30:00.000Z",
+    "actualizado_en": "2026-10-27T01:35:00.000Z"
+  },
+  {
+    "id": "c2d4e6f8-1a3b-4c5d-8e7f-9a0b1c2d3e4f",
+    "unidad": "OSC-01",
+    "solicitante": "Luis Gómez",
+    "inicio": "2026-10-27T10:00:00.000Z",
+    "fin": "2026-10-27T11:00:00.000Z",
+    "estado": "ACTIVA",
+    "creado_en": "2026-10-27T01:31:00.000Z"
+  }
+]
+```
+
+Una reserva cancelada conserva su identificador, solicitante, unidad, fechas y
+timestamp de creación. Se añade `actualizado_en` al cancelarla.
+
+---
+
+## API del módulo
+
+### `cargarReservas(rutaArchivo?)`
+
+Lee el archivo JSON y devuelve el arreglo completo de reservas.
+
+- Si el archivo no existe, devuelve `[]`.
+- Si el JSON está corrupto o no es un arreglo, propaga el error para evitar
+  perder silenciosamente el historial.
+- La ruta por defecto es `sistema-reservas-lab/reservas.json`.
+
+### `guardarReservas(reservas, rutaArchivo?)`
+
+Serializa y guarda el arreglo completo.
+
+- Exige que el argumento sea un arreglo.
+- Escribe primero en un archivo temporal y luego lo renombra de forma atómica.
+- Si falla la escritura o el renombrado, elimina el temporal y propaga el error.
+- La ruta por defecto es `sistema-reservas-lab/reservas.json`.
+
+### `crearPersistenciaJson(rutaArchivo?)`
+
+Devuelve un adaptador ligado a una ruta concreta:
+
+```js
+const { crearPersistenciaJson } = require('./persistence');
+
+const persistencia = crearPersistenciaJson('/ruta/a/reservas.json');
+// persistencia.cargarReservas()
+// persistencia.guardarReservas(reservas)
+// persistencia.rutaArchivo
+```
+
+Este adaptador permite inyectar una ruta temporal en las pruebas sin tocar el
+archivo real del proyecto.
+
+---
+
+## Integración con el servicio de reservas
+
+El servicio usa la persistencia por defecto cuando **no** recibe el arreglo
+`reservas`:
+
+```js
+const { crearServicioReservas } = require('./src/reserva-service');
+const inventario = require('./inventory.json');
+
+const servicio = crearServicioReservas({ inventario });
+
+await servicio.crearReserva({
+  unidad: 'MIC-01',
+  solicitante: 'Ana Pérez',
+  inicio: '2026-10-28T10:00:00.000Z',
+  fin: '2026-10-28T11:00:00.000Z',
+});
+
+await servicio.cancelarReserva(idReserva);
+```
+
+Flujo de persistencia:
+
+1. Al crear el servicio se ejecuta `cargarReservas()`.
+2. Cada creación válida agrega la reserva y ejecuta `guardarReservas(almacen)`.
+3. Cada cancelación cambia `estado` a `CANCELADA`, agrega `actualizado_en` y
+   vuelve a guardar el arreglo completo.
+4. Si el guardado falla, el servicio revierte el cambio en memoria para mantener
+   coherencia entre memoria y disco.
+5. Al reiniciar, un nuevo servicio carga el mismo arreglo y conserva activas,
+   canceladas e historial.
+
+### Liberación del intervalo
+
+El algoritmo de solapamiento solo considera reservas con `estado === 'ACTIVA'`.
+Por lo tanto, una reserva cancelada:
+
+- permanece en el historial;
+- ya no bloquea la unidad;
+- permite crear una nueva reserva en el mismo intervalo.
+
+---
+
+## Pruebas
+
+La persistencia se verifica en `__tests__/persistence-json.test.js` con archivos
+temporales reales:
+
+- guardado y recuperación de reservas activas y canceladas;
+- simulación de reinicio creando un servicio nuevo desde el JSON;
+- liberación del intervalo cancelado sin pérdida del registro histórico;
+- cancelación idempotente;
+- reversión de la cancelación si falla el guardado;
+- error al cancelar una reserva inexistente;
+- archivo inexistente devuelve `[]`;
+- rechazo de datos que no sean un arreglo.
+
+Comando:
+
+```bash
+cd sistema-reservas-lab
+npm test -- --runInBand
+```
+
+Resultado esperado:
+
+```text
+Test Suites: 2 passed, 2 total
+Tests:       22 passed, 22 total
+```
+
+---
+
+## Limitaciones
+
+- La escritura es síncrona y reescribe el archivo completo; es suficiente para
+  el prototipo de un solo proceso, no para alta concurrencia.
+- El archivo es local y no está cifrado. No debe contener datos sensibles.
+- Un JSON corrupto se propaga como error; la capa superior debe decidir si
+  notifica, repara o restaura desde una copia.
+- Para producción se recomienda migrar a SQLite o PostgreSQL manteniendo el
+  mismo contrato de repositorio.
